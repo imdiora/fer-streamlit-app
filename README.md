@@ -24,8 +24,11 @@ A production-oriented project for **facial expression recognition**, supporting 
 
 ## 🎥 Demo
 
-**Live Demo** Check out 👇 
-!(https://emotion-rec.streamlit.app/)
+**Live Demo** Check out 👇
+<p align="left">
+  <(https://emotion-rec.streamlit.app/) />
+</p
+
 
 **Video-based**
 
