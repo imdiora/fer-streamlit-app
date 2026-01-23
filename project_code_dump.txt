@@ -1,0 +1,1745 @@
+======================================================================
+=                  PROJECT SOURCE CODE DUMP                          =
+======================================================================
+
+Project Folder: C:\Users\HP Envy\Desktop\CV projects\FACIAL_EXPRESSION_RECOGNITION
+Date Generated: 2026-01-22 15:14:57
+
+This file contains a concatenation of all relevant source files
+found in the project directory and its subdirectories.
+
+======================================================================
+
+
+<------------------------------>
+FILE PATH: README.md
+<------------------------------>
+
+# Production-Ready Real-Time Emotion Intelligence System
+
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
+![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-red)
+![FastAPI](https://img.shields.io/badge/FastAPI-Production-009688)
+![Docker](https://img.shields.io/badge/Docker-Ready-2496ED)
+![License](https://img.shields.io/badge/License-MIT-green)
+
+A production-minded facial expression recognition system built around a DDAMFN-style PyTorch model.
+
+This repository is structured to send strong "engineer who ships" signals:
+- 📦 Installable Python package (`pip install -e .`)
+- 🚀 FastAPI inference service (`POST /predict`, `GET /health`)
+- 🖼️ Streamlit demo UI (image upload + camera snapshot)
+- 🐳 Docker and docker compose
+- 🧪 Pytest test suite and GitHub Actions CI
+
+**Model Weights:** [Hugging Face Hub](https://huggingface.co/imdiora/ddamfn-facial-expression-recognition)
+
+---
+
+## Demo
+
+*(Optional: Add a GIF here of the streamlit UI in action)*
+
+---
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A[Video / Image] --> B[Face Detect (OpenCV Haar)]
+    B --> C[Crop + Resize + Normalize]
+    C --> D[DDAMFN Model]
+    D --> E[Softmax + Top-1]
+    E --> F[FastAPI /predict]
+    F --> G[Streamlit Demo]
+
+<------------------------------>
+FILE PATH: requirements.txt
+<------------------------------>
+
+# Core ML
+torch>=2.0.0
+torchvision>=0.15.0
+numpy>=1.23
+Pillow>=10.0
+opencv-python-headless>=4.8
+
+# Config + utils
+pyyaml>=6.0
+
+# API
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9
+
+# Demo UI
+streamlit>=1.31
+
+# Testing
+pytest>=8.0
+httpx>=0.26
+
+# Optional: download weights from Hugging Face
+huggingface_hub>=0.20
+
+
+<------------------------------>
+FILE PATH: app\__init__.py
+<------------------------------>
+
+# App package for FastAPI + Streamlit entrypoints.
+
+
+<------------------------------>
+FILE PATH: app\api.py
+<------------------------------>
+
+from __future__ import annotations
+
+import logging
+import time
+from typing import Any, Dict, Optional
+
+from fastapi import FastAPI, File, UploadFile
+from fastapi.responses import JSONResponse
+
+from emotion_ai.predictor import EmotionPredictor
+from emotion_ai.utils import bgr_from_bytes, bgr_to_base64_jpeg
+from emotion_ai.version import __version__
+
+logger = logging.getLogger("emotion_ai.api")
+
+
+def create_app(config_path: str = "config/config.yaml", predictor: Optional[EmotionPredictor] = None) -> FastAPI:
+    app = FastAPI(
+        title="Emotion Intelligence API",
+        description="Production-Ready Real-Time Emotion Intelligence System (DDAMFN)",
+        version=__version__,
+    )
+
+    app.state.predictor = predictor
+
+    @app.on_event("startup")
+    def _startup() -> None:
+        if app.state.predictor is None:
+            logger.info("Initializing EmotionPredictor...")
+            app.state.predictor = EmotionPredictor(config_path=config_path)
+
+    @app.get("/health")
+    def health_check() -> Dict[str, Any]:
+        pred = app.state.predictor
+        device = str(pred.device) if pred else "unknown"
+        return {"status": "ok", "version": __version__, "device": device}
+
+    @app.post("/predict")
+    async def predict_emotion(file: UploadFile = File(...), annotate: bool = False) -> JSONResponse:
+        """Upload an image -> JSON detections.
+
+        Query params:
+            annotate=true -> include base64 JPEG overlay image in response
+        """
+        pred: EmotionPredictor = app.state.predictor
+        t0 = time.perf_counter()
+
+        try:
+            content = await file.read()
+            img_bgr = bgr_from_bytes(content)
+
+            detections = pred.predict(img_bgr)
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+            payload: Dict[str, Any] = {
+                "filename": file.filename,
+                "count": len(detections),
+                "detections": detections,
+                "processing_ms": round(float(elapsed_ms), 3),
+            }
+
+            if annotate:
+                annotated = pred.annotate_image(img_bgr, detections)
+                payload["annotated_image_base64_jpeg"] = bgr_to_base64_jpeg(annotated)
+
+            return JSONResponse(content=payload)
+
+        except Exception as e:
+            logger.exception("Prediction error")
+            return JSONResponse(content={"error": str(e)}, status_code=500)
+
+    return app
+
+
+app = create_app()
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run("app.api:app", host="0.0.0.0", port=8000, reload=True)
+
+
+<------------------------------>
+FILE PATH: app\ui.py
+<------------------------------>
+
+from __future__ import annotations
+
+import cv2
+import streamlit as st
+
+from emotion_ai.predictor import EmotionPredictor
+from emotion_ai.utils import bgr_from_bytes
+
+
+st.set_page_config(page_title="Emotion AI System", layout="wide")
+
+
+@st.cache_resource
+def load_engine() -> EmotionPredictor:
+    """Load the model once per Streamlit server process."""
+    return EmotionPredictor(config_path="config/config.yaml")
+
+
+try:
+    predictor = load_engine()
+except Exception as e:
+    st.error(f"Failed to initialize EmotionPredictor: {e}")
+    st.stop()
+
+
+st.title("Production-Ready Real-Time Emotion Intelligence")
+st.caption("DDAMFN (PyTorch) + Face Detection + Streamlit Demo")
+
+
+default_thresh = float(predictor.config.ui.default_confidence_threshold)
+confidence_threshold = st.sidebar.slider(
+    "Confidence threshold",
+    min_value=0.0,
+    max_value=1.0,
+    value=default_thresh,
+    step=0.01,
+)
+
+st.sidebar.markdown("---")
+st.sidebar.write("Runtime")
+st.sidebar.write(f"Device: `{predictor.device}`")
+st.sidebar.write(f"Weights: `{predictor.config.model.weights_path}`")
+st.sidebar.write(f"Input size: `{predictor.config.model.input_size}x{predictor.config.model.input_size}`")
+
+
+tab_upload, tab_camera = st.tabs(["Image Upload", "Camera Snapshot"])
+
+
+def render_results(image_bgr, detections):
+    filtered = [d for d in detections if d["confidence"] >= confidence_threshold]
+    annotated = predictor.annotate_image(image_bgr, filtered)
+
+    col1, col2 = st.columns([2, 1], gap="large")
+    with col1:
+        st.image(
+            cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB),
+            caption="Annotated image",
+            use_column_width=True,
+        )
+    with col2:
+        st.subheader("Detections")
+        st.write(f"Total: **{len(filtered)}** (after threshold)")
+        st.json(filtered)
+
+
+with tab_upload:
+    st.write("Upload a photo. The system detects faces and predicts expressions per face.")
+    uploaded = st.file_uploader("Choose an image file", type=["jpg", "jpeg", "png"])
+    if uploaded is not None:
+        image_bgr = bgr_from_bytes(uploaded.getvalue())
+        detections = predictor.predict(image_bgr)
+        st.write(f"Faces detected: **{len(detections)}**")
+        render_results(image_bgr, detections)
+
+
+with tab_camera:
+    st.write("Use your webcam to take a snapshot (works on most Streamlit setups).")
+    cam = st.camera_input("Take a picture")
+    if cam is not None:
+        image_bgr = bgr_from_bytes(cam.getvalue())
+        detections = predictor.predict(image_bgr)
+        st.write(f"Faces detected: **{len(detections)}**")
+        render_results(image_bgr, detections)
+
+
+st.markdown("---")
+st.markdown(
+    "Tip: run the API with `uvicorn app.api:app --reload` and send an image to `POST /predict`."
+)
+
+
+<------------------------------>
+FILE PATH: docs\architecture.md
+<------------------------------>
+
+# System Architecture
+
+High-level pipeline:
+
+1. **Input**: image / camera frame (BGR)
+2. **Face Detection**: OpenCV Haar cascade (configurable)
+3. **Preprocess**: crop -> resize -> normalize
+4. **Model Inference**: DDAMFN (PyTorch)
+5. **Output**: JSON detections (box + label + confidence)
+6. **Presentation**: Streamlit UI overlays boxes + labels
+
+Mermaid diagram (also used in README):
+
+```mermaid
+flowchart LR
+    A[Video / Image] --> B[Face Detect (OpenCV Haar)]
+    B --> C[Crop + Resize + Normalize]
+    C --> D[DDAMFN Model]
+    D --> E[Softmax + Top-k]
+    E --> F[FastAPI /predict]
+    F --> G[Streamlit Demo]
+```
+
+
+<------------------------------>
+FILE PATH: docs\ethics.md
+<------------------------------>
+
+# Ethics & Responsible Use
+
+This project performs **facial expression recognition** (emotion classification) from face images.
+
+## Important limitations
+
+- **Emotions are not ground truth.** Facial expressions are an imperfect proxy for internal emotional state.
+- **Bias & fairness:** Performance can vary across demographics (age, gender presentation, skin tone), lighting, camera quality, and cultural expression patterns.
+- **Context matters:** Expressions depend heavily on context and can be ambiguous.
+
+## Appropriate use
+
+- ✅ Demos, UX prototyping, HCI research, robotics/HRI experiments with consent.
+- ✅ Non-critical analytics where errors are acceptable.
+
+## Inappropriate / high-stakes use
+
+- ❌ Employment screening, hiring decisions, school discipline, medical diagnosis, policing, or any decision that impacts rights, benefits, or safety.
+
+## Privacy
+
+- Do not store or transmit user images without explicit consent.
+- Prefer on-device inference when possible.
+- If deploying an API, secure it (auth, TLS) and implement retention/deletion policies.
+
+
+<------------------------------>
+FILE PATH: env\pyvenv.cfg
+<------------------------------>
+
+home = C:\Program Files (x86)\Microsoft Visual Studio\Shared\Python39_64
+include-system-site-packages = false
+version = 3.9.13
+
+
+<------------------------------>
+FILE PATH: env1\pyvenv.cfg
+<------------------------------>
+
+home = C:\Program Files (x86)\Microsoft Visual Studio\Shared\Python39_64
+include-system-site-packages = false
+version = 3.9.13
+
+
+<------------------------------>
+FILE PATH: legacy\video_inference.py
+<------------------------------>
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+import cv2
+
+from emotion_ai.predictor import EmotionPredictor
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Annotate a video file with emotion predictions")
+    p.add_argument("--config", default="config/config.yaml")
+    p.add_argument("--video", required=True, help="Input video path")
+    p.add_argument("--out", default="output_annotated.avi", help="Output video path")
+    p.add_argument("--threshold", type=float, default=None, help="Confidence threshold override")
+    return p.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    video_path = Path(args.video)
+    if not video_path.exists():
+        raise FileNotFoundError(video_path)
+
+    predictor = EmotionPredictor(config_path=args.config)
+    threshold = args.threshold
+
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open video: {video_path}")
+
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25
+
+    fourcc = cv2.VideoWriter_fourcc(*"XVID")
+    out = cv2.VideoWriter(args.out, fourcc, float(fps), (width, height))
+
+    print(f"Processing: {video_path} -> {args.out}")
+
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            dets = predictor.predict(frame)
+            if threshold is not None:
+                dets = [d for d in dets if d["confidence"] >= threshold]
+
+            annotated = predictor.annotate_image(frame, dets)
+            out.write(annotated)
+    finally:
+        cap.release()
+        out.release()
+
+    print("Done.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+
+<------------------------------>
+FILE PATH: legacy\webcam_opencv.py
+<------------------------------>
+
+from __future__ import annotations
+
+import argparse
+import cv2
+
+from emotion_ai.predictor import EmotionPredictor
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="OpenCV webcam demo (local window)")
+    p.add_argument("--config", default="config/config.yaml")
+    p.add_argument("--cam", type=int, default=0, help="Camera index")
+    p.add_argument("--threshold", type=float, default=None, help="Confidence threshold override")
+    return p.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    predictor = EmotionPredictor(config_path=args.config)
+    threshold = args.threshold
+
+    cap = cv2.VideoCapture(args.cam)
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open webcam index {args.cam}")
+
+    print("Starting webcam demo. Press q to quit.")
+
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            dets = predictor.predict(frame)
+            if threshold is not None:
+                dets = [d for d in dets if d["confidence"] >= threshold]
+
+            annotated = predictor.annotate_image(frame, dets)
+            cv2.imshow("Emotion AI (webcam)", annotated)
+
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+
+<------------------------------>
+FILE PATH: scripts\benchmark.py
+<------------------------------>
+
+from __future__ import annotations
+
+import argparse
+import time
+
+import numpy as np
+import torch
+
+from emotion_ai.predictor import EmotionPredictor
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Simple latency benchmark")
+    p.add_argument("--config", default="config/config.yaml")
+    p.add_argument("--warmup", type=int, default=10)
+    p.add_argument("--iters", type=int, default=100)
+    return p.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    predictor = EmotionPredictor(config_path=args.config)
+
+    size = int(predictor.config.model.input_size)
+    x = torch.randn(1, 3, size, size, device=predictor.device)
+
+    # Warmup
+    with torch.no_grad():
+        for _ in range(args.warmup):
+            _ = predictor.model(x)
+
+        # Timed
+        t0 = time.perf_counter()
+        for _ in range(args.iters):
+            _ = predictor.model(x)
+        t1 = time.perf_counter()
+
+    total_ms = (t1 - t0) * 1000.0
+    avg_ms = total_ms / args.iters
+
+    print("Device:", predictor.device)
+    print("Iters:", args.iters)
+    print(f"Avg forward latency: {avg_ms:.3f} ms")
+    if avg_ms > 0:
+        print(f"Approx FPS: {1000.0/avg_ms:.2f}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+
+<------------------------------>
+FILE PATH: scripts\download_weights.py
+<------------------------------>
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+import yaml
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Download model weights referenced in config/config.yaml")
+    p.add_argument("--config", default="config/config.yaml", help="Path to config YAML")
+    p.add_argument("--out", default=None, help="Override output path (defaults to model.weights_path)")
+    return p.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    cfg_path = Path(args.config)
+    if not cfg_path.exists():
+        raise FileNotFoundError(f"Config not found: {cfg_path}")
+
+    cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    auto = cfg.get("model", {}).get("auto_download", {}) or {}
+    if not auto.get("repo_id") or not auto.get("filename"):
+        raise ValueError("config.model.auto_download.repo_id/filename are required")
+
+    out_path = Path(args.out or cfg.get("model", {}).get("weights_path", "models/model.pth"))
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    from huggingface_hub import hf_hub_download
+
+    print(f"Downloading: {auto['repo_id']} / {auto['filename']}")
+    downloaded = hf_hub_download(repo_id=auto["repo_id"], filename=auto["filename"])
+    src = Path(downloaded)
+    out_path.write_bytes(src.read_bytes())
+    print(f"Saved weights -> {out_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+
+<------------------------------>
+FILE PATH: src\emotion_ai\__init__.py
+<------------------------------>
+
+"""Emotion AI package.
+
+This repo is structured as a standard `src/` layout so it can be installed with:
+
+    pip install -e .
+
+Main entry points:
+- emotion_ai.predictor.EmotionPredictor
+- app.api (FastAPI)
+- app.ui (Streamlit)
+"""
+
+from .version import __version__
+
+__all__ = ["__version__"]
+
+
+<------------------------------>
+FILE PATH: src\emotion_ai\config.py
+<------------------------------>
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, Mapping, Optional
+
+import yaml
+
+
+@dataclass(frozen=True)
+class AutoDownloadConfig:
+    enabled: bool = False
+    repo_id: str = ""
+    filename: str = ""
+
+
+@dataclass(frozen=True)
+class ModelConfig:
+    arch: str = "ddamfn"
+    num_classes: int = 7
+    num_heads: int = 3
+    input_size: int = 112
+    weights_path: str = "models/model.pth"
+    backbone_pretrained_path: str = "pretrained/MFN_msceleb.pth"
+    auto_download: AutoDownloadConfig = AutoDownloadConfig()
+
+
+@dataclass(frozen=True)
+class FaceDetectionConfig:
+    method: str = "haar"
+    cascade_file: str = "haarcascade_frontalface_default.xml"
+    scale_factor: float = 1.1
+    min_neighbors: int = 5
+    min_size: int = 30
+
+
+@dataclass(frozen=True)
+class ApiConfig:
+    host: str = "0.0.0.0"
+    port: int = 8000
+
+
+@dataclass(frozen=True)
+class UiConfig:
+    host: str = "0.0.0.0"
+    port: int = 8501
+    default_confidence_threshold: float = 0.4
+
+
+@dataclass(frozen=True)
+class AppConfig:
+    model: ModelConfig
+    face_detection: FaceDetectionConfig
+    labels: Dict[int, str]
+    api: ApiConfig
+    ui: UiConfig
+
+
+def _coerce_int_keys(d: Mapping[Any, Any]) -> Dict[int, str]:
+    out: Dict[int, str] = {}
+    for k, v in d.items():
+        try:
+            out[int(k)] = str(v)
+        except Exception:
+            # best effort
+            continue
+    return out
+
+
+def load_config(config_path: str | Path) -> AppConfig:
+    """Load YAML config into typed dataclasses.
+
+    Raises:
+        FileNotFoundError: if config does not exist.
+        ValueError: if required fields are missing.
+    """
+    path = Path(config_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Config file not found: {path}")
+
+    data: Dict[str, Any]
+    with path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+
+    model_raw = data.get("model", {}) or {}
+    auto_raw = model_raw.get("auto_download", {}) or {}
+    model = ModelConfig(
+        arch=str(model_raw.get("arch", "ddamfn")),
+        num_classes=int(model_raw.get("num_classes", 7)),
+        num_heads=int(model_raw.get("num_heads", 3)),
+        input_size=int(model_raw.get("input_size", 112)),
+        weights_path=str(model_raw.get("weights_path", "models/model.pth")),
+        backbone_pretrained_path=str(
+            model_raw.get("backbone_pretrained_path", "pretrained/MFN_msceleb.pth")
+        ),
+        auto_download=AutoDownloadConfig(
+            enabled=bool(auto_raw.get("enabled", False)),
+            repo_id=str(auto_raw.get("repo_id", "")),
+            filename=str(auto_raw.get("filename", "")),
+        ),
+    )
+
+    fd_raw = data.get("face_detection", {}) or {}
+    face_detection = FaceDetectionConfig(
+        method=str(fd_raw.get("method", "haar")),
+        cascade_file=str(fd_raw.get("cascade_file", "haarcascade_frontalface_default.xml")),
+        scale_factor=float(fd_raw.get("scale_factor", 1.1)),
+        min_neighbors=int(fd_raw.get("min_neighbors", 5)),
+        min_size=int(fd_raw.get("min_size", 30)),
+    )
+
+    labels_raw = data.get("labels", {}) or {}
+    labels = _coerce_int_keys(labels_raw)
+    if not labels:
+        raise ValueError("Config must include a non-empty 'labels' mapping")
+
+    api_raw = data.get("api", {}) or {}
+    api = ApiConfig(
+        host=str(api_raw.get("host", "0.0.0.0")),
+        port=int(api_raw.get("port", 8000)),
+    )
+
+    ui_raw = data.get("ui", {}) or {}
+    ui = UiConfig(
+        host=str(ui_raw.get("host", "0.0.0.0")),
+        port=int(ui_raw.get("port", 8501)),
+        default_confidence_threshold=float(ui_raw.get("default_confidence_threshold", 0.4)),
+    )
+
+    return AppConfig(model=model, face_detection=face_detection, labels=labels, api=api, ui=ui)
+
+
+<------------------------------>
+FILE PATH: src\emotion_ai\logging_config.py
+<------------------------------>
+
+# src/emotion_ai/logging_config.py
+from __future__ import annotations
+
+import logging
+import logging.config
+import os
+import platform
+import sys
+from datetime import datetime
+from pathlib import Path
+from uuid import uuid4
+
+
+def _make_run_id() -> str:
+    # One run id per process (so API + predictor share the same file)
+    rid = os.environ.get("EMOTION_AI_RUN_ID")
+    if rid:
+        return rid
+    rid = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}"
+    os.environ["EMOTION_AI_RUN_ID"] = rid
+    return rid
+
+
+def setup_logging(
+    service_name: str = "app",
+    level: str | int = "INFO",
+    log_dir: str | Path | None = None,
+    also_console: bool = True,
+) -> Path:
+    """
+    Configure logging for the whole process (root logger).
+    - Writes to logs/<service_name>_<run_id>.log
+    - Optionally also prints to console
+    - Captures uvicorn loggers too (uvicorn.error, uvicorn.access)
+
+    Returns: Path to the log file.
+    """
+    run_id = _make_run_id()
+
+    # Where to store logs:
+    # - EMOTION_AI_LOG_DIR if set
+    # - else `logs/` under current working directory
+    env_dir = os.environ.get("EMOTION_AI_LOG_DIR")
+    base_dir = Path(env_dir) if env_dir else Path(log_dir or "logs")
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    log_path = base_dir / f"{service_name}_{run_id}.log"
+
+    # Normalize level
+    if isinstance(level, str):
+        level = level.upper()
+
+    handlers: dict = {
+        "file": {
+            "class": "logging.FileHandler",
+            "level": level,
+            "filename": str(log_path),
+            "mode": "a",
+            "encoding": "utf-8",
+            "formatter": "standard",
+        }
+    }
+
+    root_handlers = ["file"]
+
+    if also_console:
+        handlers["console"] = {
+            "class": "logging.StreamHandler",
+            "level": level,
+            "stream": "ext://sys.stdout",
+            "formatter": "standard",
+        }
+        root_handlers.append("console")
+
+    config = {
+        "version": 1,
+        "disable_existing_loggers": False,  # important: don't silence libraries
+        "formatters": {
+            "standard": {
+                "format": "%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+                "datefmt": "%Y-%m-%d %H:%M:%S",
+            }
+        },
+        "handlers": handlers,
+        "root": {"level": level, "handlers": root_handlers},
+        "loggers": {
+            # Ensure uvicorn logs flow into our handlers too
+            "uvicorn": {"level": level, "propagate": True},
+            "uvicorn.error": {"level": level, "propagate": True},
+            "uvicorn.access": {"level": level, "propagate": True},
+            # Your package namespace
+            "emotion_ai": {"level": level, "propagate": True},
+        },
+    }
+
+    logging.config.dictConfig(config)
+
+    # Log basic run header once
+    logging.getLogger("emotion_ai.run").info(
+        "Run started | service=%s | run_id=%s | python=%s | platform=%s | cwd=%s",
+        service_name,
+        run_id,
+        sys.version.replace("\n", " "),
+        platform.platform(),
+        os.getcwd(),
+    )
+    logging.getLogger("emotion_ai.run").info("Log file: %s", log_path)
+
+    return log_path
+
+
+<------------------------------>
+FILE PATH: src\emotion_ai\predictor.py
+<------------------------------>
+
+from __future__ import annotations
+
+import logging
+import time
+from collections import OrderedDict
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import cv2
+import numpy as np
+import torch
+from PIL import Image
+from torchvision import transforms
+
+from .config import AppConfig, load_config
+from .networks import DDAMNet
+from .utils import clamp_box
+
+logger = logging.getLogger(__name__)
+
+
+class EmotionPredictor:
+    """High-level predictor used by both the API and the Streamlit UI."""
+
+    def __init__(self, config_path: str = "config/config.yaml") -> None:
+        self.config_path = config_path
+        self.config: AppConfig = load_config(config_path)
+
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.labels = self.config.labels
+
+        self.model: Optional[DDAMNet] = None
+        self.face_cascade: Optional[cv2.CascadeClassifier] = None
+        self.transform: Optional[transforms.Compose] = None
+
+        self._load_model()
+        self._init_face_detector()
+        self._init_preprocess()
+
+    # ---------------------------
+    # Initialization
+    # ---------------------------
+    def _maybe_download_weights(self, weights_path: Path) -> None:
+        auto = self.config.model.auto_download
+        if not auto.enabled:
+            return
+        if weights_path.exists():
+            return
+        # If running locally without internet, skip this check
+        if not auto.repo_id or not auto.filename:
+            return
+
+        logger.info("Weights not found at %s. Attempting download...", weights_path)
+        weights_path.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            from huggingface_hub import hf_hub_download
+            downloaded = hf_hub_download(repo_id=auto.repo_id, filename=auto.filename)
+            weights_path.write_bytes(Path(downloaded).read_bytes())
+            logger.info("Downloaded weights -> %s", weights_path)
+        except Exception as e:
+            logger.warning("Failed to auto-download weights: %s", e)
+
+    def _load_model(self) -> None:
+        model_cfg = self.config.model
+        weights_path = Path(model_cfg.weights_path)
+        self._maybe_download_weights(weights_path)
+
+        if not weights_path.exists():
+            print("❌ Weights not found.")
+            return
+
+        # 1. Inspect the weights file on CPU
+        ckpt = torch.load(weights_path, map_location="cpu")
+        state_dict = ckpt.get("model_state_dict", ckpt)
+
+        # 2. Mathematically detect how many heads we need
+        # If fc.weight second dimension is 2048, heads = 2048/512 = 4.
+        in_features = state_dict["fcer.weight"].shape[1]
+        detected_heads = in_features // 512
+        print(f"✅ Detected {detected_heads} heads in checkpoint. Adjusting architecture...")
+
+        # 3. Build the model with the detected heads
+        self.model = DDAMNet(num_class=7, num_head=detected_heads).to(self.device)
+
+        # 4. Map the keys
+        from collections import OrderedDict
+        new_state_dict = OrderedDict()
+        for k, v in state_dict.items():
+            name = k.replace("module.", "").replace(".CA.", ".ca.").replace("CoordAtt.", "ca.")
+            # Map head naming
+            if "cat_head" in name:
+                for i in range(detected_heads):
+                    name = name.replace(f"cat_head{i}", f"heads.{i}")
+            new_state_dict[name] = v
+
+        # 5. Load weights into the adjusted model
+        self.model.load_state_dict(new_state_dict, strict=False)
+        self.model.eval()
+        print("🚀 Model successfully loaded and ready for all emotions.")
+
+    def _init_face_detector(self) -> None:
+        fd = self.config.face_detection
+        cascade_path = cv2.data.haarcascades + fd.cascade_file
+        self.face_cascade = cv2.CascadeClassifier(cascade_path)
+
+    def _init_preprocess(self) -> None:
+        size = int(self.config.model.input_size)
+        self.transform = transforms.Compose([
+            transforms.Resize((size, size)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+        ])
+
+    def predict(self, image_bgr: np.ndarray) -> List[Dict[str, Any]]:
+        if self.model is None: return []
+
+        # Face Detect
+        gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+        faces = self.face_cascade.detectMultiScale(
+            gray,
+            scaleFactor=float(self.config.face_detection.scale_factor),
+            minNeighbors=int(self.config.face_detection.min_neighbors),
+            minSize=(int(self.config.face_detection.min_size), int(self.config.face_detection.min_size)),
+        )
+
+        results = []
+        if len(faces) == 0: return results
+
+        with torch.no_grad():
+            for (x, y, w, h) in faces:
+                # Clamp
+                H, W = image_bgr.shape[:2]
+                x = max(0, min(x, W-1)); y = max(0, min(y, H-1))
+                w = max(0, min(w, W-x)); h = max(0, min(h, H-y))
+                
+                face = image_bgr[y:y+h, x:x+w]
+                if face.size == 0: continue
+
+                # Preprocess
+                face_rgb = cv2.cvtColor(face, cv2.COLOR_BGR2RGB)
+                inp = self.transform(Image.fromarray(face_rgb)).unsqueeze(0).to(self.device)
+
+                # Inference
+                out = self.model(inp)
+                logits = out[0] if isinstance(out, (tuple, list)) else out
+                probs = torch.softmax(logits, dim=1)[0]
+                
+                class_id = int(torch.argmax(probs).item())
+                confidence = float(probs[class_id].item())
+                emotion = self.labels.get(class_id, str(class_id))
+
+                results.append({
+                    "box": [int(x), int(y), int(w), int(h)],
+                    "emotion": emotion,
+                    "confidence": round(confidence, 4),
+                    "class_id": class_id
+                })
+
+        return results
+
+    def annotate_image(self, image_bgr: np.ndarray, detections: List[Dict[str, Any]]) -> np.ndarray:
+        annotated = image_bgr.copy()
+        for det in detections:
+            x, y, w, h = det["box"]
+            label = f"{det['emotion']} ({det['confidence']:.2f})"
+            color = (0, 255, 0)
+            
+            cv2.rectangle(annotated, (x, y), (x+w, y+h), color, 2)
+            cv2.putText(annotated, label, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+        return annotated
+
+<------------------------------>
+FILE PATH: src\emotion_ai\utils.py
+<------------------------------>
+
+from __future__ import annotations
+
+import base64
+from typing import Tuple
+
+import cv2
+import numpy as np
+
+
+def bgr_from_bytes(data: bytes) -> np.ndarray:
+    """Decode image bytes into an OpenCV BGR uint8 image."""
+    arr = np.frombuffer(data, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise ValueError("Could not decode image. Unsupported format or corrupted file.")
+    return img
+
+
+def bgr_to_jpeg_bytes(image_bgr: np.ndarray, quality: int = 90) -> bytes:
+    """Encode BGR image to JPEG bytes."""
+    encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)]
+    ok, buf = cv2.imencode(".jpg", image_bgr, encode_params)
+    if not ok:
+        raise RuntimeError("Failed to encode image as JPEG")
+    return bytes(buf)
+
+
+def bgr_to_base64_jpeg(image_bgr: np.ndarray, quality: int = 90) -> str:
+    """Encode BGR image to base64 jpeg string (no data: prefix)."""
+    raw = bgr_to_jpeg_bytes(image_bgr, quality=quality)
+    return base64.b64encode(raw).decode("utf-8")
+
+
+def clamp_box(x: int, y: int, w: int, h: int, img_shape: Tuple[int, int, int]) -> Tuple[int, int, int, int]:
+    """Clamp box to image boundaries."""
+    H, W = img_shape[0], img_shape[1]
+    x = max(0, min(int(x), W - 1))
+    y = max(0, min(int(y), H - 1))
+    w = max(0, min(int(w), W - x))
+    h = max(0, min(int(h), H - y))
+    return x, y, w, h
+
+
+<------------------------------>
+FILE PATH: src\emotion_ai\version.py
+<------------------------------>
+
+__version__ = "1.0.0"
+
+
+<------------------------------>
+FILE PATH: src\emotion_ai\networks\DDAM.py
+<------------------------------>
+
+import torch
+import torch.nn as nn
+from .MixedFeatureNet import MixedFeatureNet
+
+class LinearBlock(nn.Module):
+    def __init__(self, in_c, out_c, kernel=(1, 1), stride=(1, 1), padding=(0, 0), groups=1):
+        super().__init__()
+        self.conv = nn.Conv2d(in_c, out_c, kernel, stride, padding, groups=groups, bias=False)
+        self.bn = nn.BatchNorm2d(out_c)
+    def forward(self, x):
+        return self.bn(self.conv(x))
+
+class CoordAttHead(nn.Module):
+    def __init__(self, channels=512):
+        super().__init__()
+        from .MixedFeatureNet import CoordAtt
+        self.ca = CoordAtt(channels, channels)
+    def forward(self, x):
+        return self.ca(x)
+
+class DDAMNet(nn.Module):
+    def __init__(self, num_class=7, num_head=4):
+        super().__init__()
+        net = MixedFeatureNet()
+        
+        # We explicitly name these so they match the weights file keys perfectly
+        self.conv1 = net.conv1
+        self.conv2_dw = net.conv2_dw
+        self.conv_23 = net.conv_23
+        self.conv_3 = net.conv_3
+        self.conv_34 = net.conv_34
+        self.conv_4 = net.conv_4
+        self.conv_45 = net.conv_45
+        self.conv_5 = net.conv_5
+        self.conv_6_sep = net.conv_6_sep
+
+        self.num_head = num_head
+        self.heads = nn.ModuleList([CoordAttHead(512) for _ in range(num_head)])
+        
+        # Shared linear/pool for the heads
+        self.linear = LinearBlock(512, 512, groups=512, kernel=(7, 7))
+        self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        
+        # 512 * 4 heads = 2048. Matches your [7, 2048] checkpoint error fix.
+        self.fc = nn.Linear(512 * num_head, num_class)
+
+    def forward(self, x):
+        # Backbone
+        x = self.conv1(x)
+        x = self.conv2_dw(x)
+        x = self.conv_23(x)
+        x = self.conv_3(x)
+        x = self.conv_34(x)
+        x = self.conv_4(x)
+        x = self.conv_45(x)
+        x = self.conv_5(x)
+        x_feat = self.conv_6_sep(x)
+
+        # Head processing
+        features = []
+        for i in range(self.num_head):
+            attn = self.heads[i](x_feat)
+            y = x_feat * attn
+            y = self.linear(y)
+            y = self.pool(y)
+            features.append(torch.flatten(y, 1))
+
+        # Concatenate all heads: Result is size 2048
+        combined = torch.cat(features, dim=1)
+        return self.fc(combined)
+
+<------------------------------>
+FILE PATH: src\emotion_ai\networks\MixedFeatureNet.py
+<------------------------------>
+
+from __future__ import annotations
+
+import torch
+import torch.nn as nn
+
+
+class Flatten(nn.Module):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x.view(x.size(0), -1)
+
+
+def l2_norm(x: torch.Tensor, axis: int = 1, eps: float = 1e-12) -> torch.Tensor:
+    norm = torch.norm(x, p=2, dim=axis, keepdim=True).clamp(min=eps)
+    return x / norm
+
+
+class ConvBlock(nn.Module):
+    def __init__(
+        self,
+        in_c: int,
+        out_c: int,
+        kernel: tuple[int, int] = (1, 1),
+        stride: tuple[int, int] = (1, 1),
+        padding: tuple[int, int] = (0, 0),
+        groups: int = 1,
+    ) -> None:
+        super().__init__()
+        self.conv = nn.Conv2d(
+            in_c,
+            out_c,
+            kernel_size=kernel,
+            stride=stride,
+            padding=padding,
+            groups=groups,
+            bias=False,
+        )
+        self.bn = nn.BatchNorm2d(out_c)
+        self.prelu = nn.PReLU(out_c)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.prelu(self.bn(self.conv(x)))
+
+
+class LinearBlock(nn.Module):
+    def __init__(
+        self,
+        in_c: int,
+        out_c: int,
+        kernel: tuple[int, int] = (1, 1),
+        stride: tuple[int, int] = (1, 1),
+        padding: tuple[int, int] = (0, 0),
+        groups: int = 1,
+    ) -> None:
+        super().__init__()
+        self.conv = nn.Conv2d(
+            in_c,
+            out_c,
+            kernel_size=kernel,
+            stride=stride,
+            padding=padding,
+            groups=groups,
+            bias=False,
+        )
+        self.bn = nn.BatchNorm2d(out_c)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.bn(self.conv(x))
+
+
+class DepthWise(nn.Module):
+    def __init__(
+        self,
+        in_c: int,
+        out_c: int,
+        residual: bool = False,
+        kernel: tuple[int, int] = (3, 3),
+        stride: tuple[int, int] = (2, 2),
+        padding: tuple[int, int] = (1, 1),
+        groups: int = 1,
+    ) -> None:
+        super().__init__()
+        self.residual = residual
+        self.conv = ConvBlock(in_c, groups, kernel=(1, 1), stride=(1, 1), padding=(0, 0))
+        self.conv_dw = ConvBlock(groups, groups, kernel=kernel, stride=stride, padding=padding, groups=groups)
+        self.project = LinearBlock(groups, out_c, kernel=(1, 1), stride=(1, 1), padding=(0, 0))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        shortcut = x
+        x = self.conv(x)
+        x = self.conv_dw(x)
+        x = self.project(x)
+        return shortcut + x if self.residual else x
+
+
+class HSigmoid(nn.Module):
+    def __init__(self, inplace: bool = True) -> None:
+        super().__init__()
+        self.relu = nn.ReLU6(inplace=inplace)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.relu(x + 3) / 6
+
+
+class HSwish(nn.Module):
+    def __init__(self, inplace: bool = True) -> None:
+        super().__init__()
+        self.sigmoid = HSigmoid(inplace=inplace)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x * self.sigmoid(x)
+
+
+class CoordAtt(nn.Module):
+    """Coordinate Attention (lightweight).
+
+    This follows the common CoordAtt pattern used in mobile networks.
+    """
+
+    def __init__(self, inp: int, oup: int, groups: int = 32) -> None:
+        super().__init__()
+        self.pool_h = nn.AdaptiveAvgPool2d((None, 1))
+        self.pool_w = nn.AdaptiveAvgPool2d((1, None))
+
+        mip = max(8, inp // groups)
+        self.conv1 = nn.Conv2d(inp, mip, kernel_size=1, stride=1, padding=0)
+        self.bn1 = nn.BatchNorm2d(mip)
+        self.act = HSwish()
+        self.conv_h = nn.Conv2d(mip, oup, kernel_size=1, stride=1, padding=0)
+        self.conv_w = nn.Conv2d(mip, oup, kernel_size=1, stride=1, padding=0)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        identity = x
+        n, c, h, w = x.size()
+
+        x_h = self.pool_h(x)
+        x_w = self.pool_w(x).permute(0, 1, 3, 2)
+        y = torch.cat([x_h, x_w], dim=2)
+
+        y = self.act(self.bn1(self.conv1(y)))
+        x_h, x_w = torch.split(y, [h, w], dim=2)
+        x_w = x_w.permute(0, 1, 3, 2)
+
+        a_h = self.conv_h(x_h).sigmoid()
+        a_w = self.conv_w(x_w).sigmoid()
+
+        a_h = a_h.expand(-1, -1, h, w)
+        a_w = a_w.expand(-1, -1, h, w)
+        return identity * a_w * a_h
+
+
+class MDConv(nn.Module):
+    """Mixed Depthwise Convolution.
+
+    Splits channels and applies depthwise conv with different kernel sizes.
+    """
+
+    def __init__(
+        self,
+        channels: int,
+        kernel_sizes: list[int],
+        split_out_channels: list[int],
+        stride: tuple[int, int],
+    ) -> None:
+        super().__init__()
+        if sum(split_out_channels) != channels:
+            raise ValueError(
+                f"MDConv split_out_channels must sum to channels ({channels}); got {sum(split_out_channels)}"
+            )
+        if len(kernel_sizes) != len(split_out_channels):
+            raise ValueError("MDConv kernel_sizes and split_out_channels must have same length")
+
+        self.split_channels = split_out_channels
+        self.mixed_depthwise_conv = nn.ModuleList(
+            [
+                nn.Conv2d(
+                    c,
+                    c,
+                    kernel_size=k,
+                    stride=stride,
+                    padding=k // 2,
+                    groups=c,
+                    bias=False,
+                )
+                for c, k in zip(self.split_channels, kernel_sizes)
+            ]
+        )
+        self.bn = nn.BatchNorm2d(channels)
+        self.prelu = nn.PReLU(channels)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x_split = torch.split(x, self.split_channels, dim=1)
+        out = [conv(t) for conv, t in zip(self.mixed_depthwise_conv, x_split)]
+        out = torch.cat(out, dim=1)
+        return self.prelu(self.bn(out))
+
+
+class MixDepthWise(nn.Module):
+    def __init__(
+        self,
+        in_c: int,
+        out_c: int,
+        residual: bool = False,
+        kernel: tuple[int, int] = (3, 3),
+        stride: tuple[int, int] = (2, 2),
+        padding: tuple[int, int] = (1, 1),
+        groups: int = 1,
+        kernel_sizes: list[int] = [3, 5, 7],
+        split_out_channels: list[int] = [64, 32, 32],
+    ) -> None:
+        super().__init__()
+        self.residual = residual
+
+        # 1x1 expand
+        self.conv = ConvBlock(in_c, groups, kernel=(1, 1), stride=(1, 1), padding=(0, 0))
+        # mixed depthwise
+        self.conv_dw = MDConv(channels=groups, kernel_sizes=kernel_sizes, split_out_channels=split_out_channels, stride=stride)
+        # coordinate attention
+        self.ca = CoordAtt(groups, groups)
+        # projection
+        self.project = LinearBlock(groups, out_c, kernel=(1, 1), stride=(1, 1), padding=(0, 0))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        shortcut = x
+        x = self.conv(x)
+        x = self.conv_dw(x)
+        x = self.ca(x)
+        x = self.project(x)
+        return shortcut + x if self.residual else x
+
+
+class Residual(nn.Module):
+    def __init__(
+        self,
+        c: int,
+        num_block: int,
+        groups: int,
+        kernel: tuple[int, int] = (3, 3),
+        stride: tuple[int, int] = (1, 1),
+        padding: tuple[int, int] = (1, 1),
+    ) -> None:
+        super().__init__()
+        blocks = [DepthWise(c, c, residual=True, kernel=kernel, stride=stride, padding=padding, groups=groups) for _ in range(num_block)]
+        self.model = nn.Sequential(*blocks)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.model(x)
+
+
+class MixResidual(nn.Module):
+    def __init__(
+        self,
+        c: int,
+        num_block: int,
+        groups: int,
+        kernel: tuple[int, int] = (3, 3),
+        stride: tuple[int, int] = (1, 1),
+        padding: tuple[int, int] = (1, 1),
+        kernel_sizes: list[int] = [3, 5],
+        split_out_channels: list[int] = [64, 64],
+    ) -> None:
+        super().__init__()
+        blocks = [
+            MixDepthWise(
+                c,
+                c,
+                residual=True,
+                kernel=kernel,
+                stride=stride,
+                padding=padding,
+                groups=groups,
+                kernel_sizes=kernel_sizes,
+                split_out_channels=split_out_channels,
+            )
+            for _ in range(num_block)
+        ]
+        self.model = nn.Sequential(*blocks)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.model(x)
+
+
+class MixedFeatureNet(nn.Module):
+    """Backbone network used by DDAMFN.
+
+    Designed for 112x112 input.
+
+    The full forward returns a normalized embedding, but in this repository we mostly
+    reuse intermediate features (512 x 7 x 7) for emotion classification.
+    """
+
+    def __init__(self, embedding_size: int = 256, out_h: int = 7, out_w: int = 7) -> None:
+        super().__init__()
+
+        # 112x112 -> 56x56
+        self.conv1 = ConvBlock(3, 64, kernel=(3, 3), stride=(2, 2), padding=(1, 1))
+
+        # 56x56
+        self.conv2_dw = ConvBlock(64, 64, kernel=(3, 3), stride=(1, 1), padding=(1, 1), groups=64)
+
+        # 56x56 -> 28x28
+        self.conv_23 = MixDepthWise(
+            64,
+            64,
+            kernel=(3, 3),
+            stride=(2, 2),
+            padding=(1, 1),
+            groups=128,
+            kernel_sizes=[3, 5, 7],
+            split_out_channels=[64, 32, 32],
+        )
+
+        # 28x28
+        self.conv_3 = MixResidual(
+            64,
+            num_block=9,
+            groups=128,
+            kernel=(3, 3),
+            stride=(1, 1),
+            padding=(1, 1),
+            kernel_sizes=[3, 5],
+            split_out_channels=[96, 32],
+        )
+
+        # 28x28 -> 14x14
+        self.conv_34 = MixDepthWise(
+            64,
+            128,
+            kernel=(3, 3),
+            stride=(2, 2),
+            padding=(1, 1),
+            groups=256,
+            kernel_sizes=[3, 5, 7],
+            split_out_channels=[128, 64, 64],
+        )
+
+        # 14x14
+        self.conv_4 = MixResidual(
+            128,
+            num_block=16,
+            groups=256,
+            kernel=(3, 3),
+            stride=(1, 1),
+            padding=(1, 1),
+            kernel_sizes=[3, 5],
+            split_out_channels=[192, 64],
+        )
+
+        # 14x14 -> 7x7
+        # Note: groups and split channels follow the pattern used in many DDAMFN implementations:
+        # allocate one chunk per kernel size.
+        self.conv_45 = MixDepthWise(
+            128,
+            256,
+            kernel=(3, 3),
+            stride=(2, 2),
+            padding=(1, 1),
+            groups=256 * 4,
+            kernel_sizes=[3, 5, 7, 9],
+            split_out_channels=[256, 256, 256, 256],
+        )
+
+        # 7x7
+        self.conv_5 = MixResidual(
+            256,
+            num_block=6,
+            groups=512,
+            kernel=(3, 3),
+            stride=(1, 1),
+            padding=(1, 1),
+            kernel_sizes=[3, 5, 7],
+            split_out_channels=[172, 170, 170],
+        )
+
+        # 7x7 -> 7x7
+        self.conv_6_sep = ConvBlock(256, 512, kernel=(1, 1), stride=(1, 1), padding=(0, 0))
+
+        # 7x7 -> 1x1 (depthwise)
+        self.conv_6_dw = LinearBlock(512, 512, kernel=(out_h, out_w), stride=(1, 1), padding=(0, 0), groups=512)
+        self.conv_6_flatten = Flatten()
+
+        self.linear = nn.Linear(512, embedding_size, bias=False)
+        self.bn = nn.BatchNorm1d(embedding_size)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.conv1(x)
+        out = self.conv2_dw(out)
+        out = self.conv_23(out)
+        out = self.conv_3(out)
+        out = self.conv_34(out)
+        out = self.conv_4(out)
+        out = self.conv_45(out)
+        out = self.conv_5(out)
+        out = self.conv_6_sep(out)
+        out = self.conv_6_dw(out)
+        out = self.conv_6_flatten(out)
+        out = self.linear(out)
+        out = self.bn(out)
+        return l2_norm(out)
+
+
+<------------------------------>
+FILE PATH: src\emotion_ai\networks\__init__.py
+<------------------------------>
+
+"""Neural network architectures.
+
+This folder contains a cleaned-up implementation of the DDAMFN-style architecture used
+in the original project, made importable under the `emotion_ai` package.
+
+Main export:
+- emotion_ai.networks.DDAM.DDAMNet
+"""
+
+from .DDAM import DDAMNet
+
+__all__ = ["DDAMNet"]
+
+
+<------------------------------>
+FILE PATH: src\emotion_ai_system.egg-info\SOURCES.txt
+<------------------------------>
+
+LICENSE
+README.md
+pyproject.toml
+src/emotion_ai/__init__.py
+src/emotion_ai/config.py
+src/emotion_ai/predictor.py
+src/emotion_ai/utils.py
+src/emotion_ai/version.py
+src/emotion_ai/networks/DDAM.py
+src/emotion_ai/networks/MixedFeatureNet.py
+src/emotion_ai/networks/__init__.py
+src/emotion_ai_system.egg-info/PKG-INFO
+src/emotion_ai_system.egg-info/SOURCES.txt
+src/emotion_ai_system.egg-info/dependency_links.txt
+src/emotion_ai_system.egg-info/requires.txt
+src/emotion_ai_system.egg-info/top_level.txt
+tests/test_api.py
+tests/test_config.py
+tests/test_predictor.py
+
+<------------------------------>
+FILE PATH: src\emotion_ai_system.egg-info\dependency_links.txt
+<------------------------------>
+
+
+
+
+<------------------------------>
+FILE PATH: src\emotion_ai_system.egg-info\requires.txt
+<------------------------------>
+
+torch>=2.0.0
+torchvision>=0.15.0
+numpy>=1.23
+Pillow>=10.0
+opencv-python-headless>=4.8
+pyyaml>=6.0
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9
+streamlit>=1.31
+
+[dev]
+pytest>=8.0
+httpx>=0.26
+huggingface_hub>=0.20
+
+
+<------------------------------>
+FILE PATH: src\emotion_ai_system.egg-info\top_level.txt
+<------------------------------>
+
+emotion_ai
+
+
+<------------------------------>
+FILE PATH: tests\conftest.py
+<------------------------------>
+
+import pytest
+
+from emotion_ai.predictor import EmotionPredictor
+
+
+@pytest.fixture(scope="session")
+def predictor() -> EmotionPredictor:
+    return EmotionPredictor(config_path="config/config.yaml")
+
+
+<------------------------------>
+FILE PATH: tests\test_api.py
+<------------------------------>
+
+import cv2
+import numpy as np
+from fastapi.testclient import TestClient
+
+from app.api import create_app
+
+
+class DummyPredictor:
+    def __init__(self):
+        self.device = "cpu"
+
+    def predict(self, image_bgr):
+        return [
+            {
+                "box": [0, 0, 10, 10],
+                "emotion": "Happy",
+                "confidence": 0.99,
+                "class_id": 3,
+                "inference_ms": 1.0,
+            }
+        ]
+
+    def annotate_image(self, image_bgr, detections):
+        return image_bgr
+
+
+def test_health_endpoint():
+    app = create_app(predictor=DummyPredictor())
+    client = TestClient(app)
+    r = client.get("/health")
+    assert r.status_code == 200
+    assert r.json()["status"] == "ok"
+
+
+def test_predict_endpoint_returns_json():
+    app = create_app(predictor=DummyPredictor())
+    client = TestClient(app)
+
+    img = np.zeros((64, 64, 3), dtype=np.uint8)
+    ok, buf = cv2.imencode(".jpg", img)
+    assert ok
+
+    files = {"file": ("test.jpg", bytes(buf), "image/jpeg")}
+    r = client.post("/predict", files=files)
+    assert r.status_code == 200
+    data = r.json()
+    assert "detections" in data
+    assert data["count"] == 1
+    assert data["detections"][0]["emotion"] == "Happy"
+
+
+<------------------------------>
+FILE PATH: tests\test_config.py
+<------------------------------>
+
+from emotion_ai.config import load_config
+
+
+def test_config_loads():
+    cfg = load_config("config/config.yaml")
+    assert cfg.model.num_classes > 0
+    assert isinstance(cfg.labels, dict)
+    assert 0 in cfg.labels
+
+
+<------------------------------>
+FILE PATH: tests\test_predictor.py
+<------------------------------>
+
+import numpy as np
+
+from emotion_ai.predictor import EmotionPredictor
+
+
+def test_predictor_initializes_without_weights(predictor: EmotionPredictor):
+    # The repo ships without a checkpoint by default.
+    # Predictor should still initialize (random weights) and not crash.
+    assert predictor.model is not None
+
+
+def test_detect_faces_on_blank_image(predictor: EmotionPredictor):
+    blank = np.zeros((224, 224, 3), dtype=np.uint8)
+    faces = predictor.detect_faces(blank)
+    assert len(faces) == 0
+
+
+def test_predict_returns_list(predictor: EmotionPredictor):
+    blank = np.zeros((224, 224, 3), dtype=np.uint8)
+    out = predictor.predict(blank)
+    assert isinstance(out, list)

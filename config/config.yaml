@@ -1,0 +1,35 @@
+model:
+  arch: "resnet50"
+  num_classes: 7
+  input_size: 224
+  weights_path: "models/model.pth"
+
+  auto_download:
+    enabled: true
+    repo_id: "imdiora/ddamfn-facial-expression-recognition"
+    filename: "resnet50_baseline.pth"
+
+
+face_detection:
+  cascade_file: "haarcascade_frontalface_default.xml"
+  scale_factor: 1.1
+  min_neighbors: 3
+  min_size: 30
+
+labels:
+  0: "Surprise"
+  1: "Fear"
+  2: "Disgust"
+  3: "Happiness"
+  4: "Sadness"
+  5: "Anger"
+  6: "Neutral"
+
+api:
+  host: "0.0.0.0"
+  port: 8000
+
+ui:
+  host: "0.0.0.0"
+  port: 8501
+  default_confidence_threshold: 0.4

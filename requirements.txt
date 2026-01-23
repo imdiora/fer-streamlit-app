@@ -1,0 +1,24 @@
+# Core ML
+torch>=2.0.0
+torchvision>=0.15.0
+numpy>=1.23
+Pillow>=10.0
+opencv-python-headless>=4.8
+
+# Config + utils
+pyyaml>=6.0
+
+# API
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9
+
+# Demo UI
+streamlit>=1.31
+
+# Testing
+pytest>=8.0
+httpx>=0.26
+
+# Optional: download weights from Hugging Face
+huggingface_hub>=0.20

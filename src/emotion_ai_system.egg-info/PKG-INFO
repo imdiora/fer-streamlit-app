@@ -1,0 +1,62 @@
+Metadata-Version: 2.4
+Name: emotion-ai-system
+Version: 1.0.0
+Summary: Production-Ready Real-Time Emotion Intelligence System (DDAMFN + FastAPI + Streamlit)
+Author: Diyora Bobokulova
+License: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: torch>=2.0.0
+Requires-Dist: torchvision>=0.15.0
+Requires-Dist: numpy>=1.23
+Requires-Dist: Pillow>=10.0
+Requires-Dist: opencv-python-headless>=4.8
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: fastapi>=0.110
+Requires-Dist: uvicorn[standard]>=0.27
+Requires-Dist: python-multipart>=0.0.9
+Requires-Dist: streamlit>=1.31
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: httpx>=0.26; extra == "dev"
+Requires-Dist: huggingface_hub>=0.20; extra == "dev"
+Dynamic: license-file
+
+# Production-Ready Real-Time Emotion Intelligence System
+
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
+![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-red)
+![FastAPI](https://img.shields.io/badge/FastAPI-Production-009688)
+![Docker](https://img.shields.io/badge/Docker-Ready-2496ED)
+![License](https://img.shields.io/badge/License-MIT-green)
+
+A production-minded facial expression recognition system built around a DDAMFN-style PyTorch model.
+
+This repository is structured to send strong "engineer who ships" signals:
+- 📦 Installable Python package (`pip install -e .`)
+- 🚀 FastAPI inference service (`POST /predict`, `GET /health`)
+- 🖼️ Streamlit demo UI (image upload + camera snapshot)
+- 🐳 Docker and docker compose
+- 🧪 Pytest test suite and GitHub Actions CI
+
+**Model Weights:** [Hugging Face Hub](https://huggingface.co/imdiora/ddamfn-facial-expression-recognition)
+
+---
+
+## Demo
+
+*(Optional: Add a GIF here of the streamlit UI in action)*
+
+---
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A[Video / Image] --> B[Face Detect (OpenCV Haar)]
+    B --> C[Crop + Resize + Normalize]
+    C --> D[DDAMFN Model]
+    D --> E[Softmax + Top-1]
+    E --> F[FastAPI /predict]
+    F --> G[Streamlit Demo]
