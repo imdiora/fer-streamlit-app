@@ -9,8 +9,9 @@ A production-oriented project for **facial expression recognition**, supporting 
 ![FastAPI](https://img.shields.io/badge/FastAPI-Production-009688)
 ![Docker](https://img.shields.io/badge/Docker-Ready-2496ED)
 ![License](https://img.shields.io/badge/License-MIT-green)
-.
 
+.
+----------------------------
 ---
 
 ## ✨ Highlights
